@@ -49,20 +49,26 @@ func NewResizerFromClient(
 	informerFactory informers.SharedInformerFactory,
 	driverName string) (Resizer, error) {
 
+	// 通过GRPC请求CSI插件，判断当前CSI插件是否支持ControllerService
 	supportControllerService, err := supportsPluginControllerService(csiClient, timeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check if plugin supports controller service: %v", err)
 	}
 
+	// 如果当前CSI插件根本就不支持ControllerService，那肯定无法支持持久卷的扩缩容
 	if !supportControllerService {
 		return nil, controllerServiceNotSupportErr
 	}
 
+	// 通过GRPC调用ControllerService服务的ControllerGetCapabilities接口获取CSI插件能力，判断是否支持EXPAND_VOLUME，如果支持说明
+	// 当前CSI插件支持对于持久卷进行扩缩容
 	supportControllerResize, err := supportsControllerResize(csiClient, timeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check if plugin supports controller resize: %v", err)
 	}
 
+	// 如果当前CSI插件不支持ControllerResize，那么就通过GRPC调用CSI插件的Node服务的NodeGetCapabilities接口获取CSI插件的Node能力，
+	// 如果还是不支持，那么只能返回错误。如果支持NodeResize，那么使用TrivialResizer处理
 	if !supportControllerResize {
 		supportsNodeResize, err := supportsNodeResize(csiClient, timeout)
 		if err != nil {
@@ -75,6 +81,7 @@ func NewResizerFromClient(
 		return nil, resizeNotSupportErr
 	}
 
+	// TODO 这里为啥不检测第一个返回值
 	_, err = supportsControllerSingleNodeMultiWriter(csiClient, timeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check if plugin supports the SINGLE_NODE_MULTI_WRITER capability: %v", err)

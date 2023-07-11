@@ -29,6 +29,7 @@ type Resizer interface {
 	DriverSupportsControlPlaneExpansion() bool
 	// CanSupport returns true if resizer supports resize operation of this PV
 	// with its corresponding PVC.
+	// 判断当前PV是否支持扩容
 	CanSupport(pv *v1.PersistentVolume, pvc *v1.PersistentVolumeClaim) bool
 	// Resize executes the resize operation of this PV.
 	Resize(pv *v1.PersistentVolume, requestSize resource.Quantity) (newSize resource.Quantity, fsResizeRequired bool, err error)

@@ -52,6 +52,7 @@ var (
 	resyncPeriod = flag.Duration("resync-period", time.Minute*10, "Resync period for cache")
 	workers      = flag.Int("workers", 10, "Concurrency to process multiple resize requests")
 
+	// CSI的插件监听的Socket
 	csiAddress = flag.String("csi-address", "/run/csi/socket", "Address of the CSI driver socket.")
 	timeout    = flag.Duration("timeout", 10*time.Second, "Timeout for waiting for CSI driver socket.")
 
@@ -73,6 +74,7 @@ var (
 	kubeAPIQPS   = flag.Float64("kube-api-qps", 5, "QPS to use while communicating with the kubernetes apiserver. Defaults to 5.0.")
 	kubeAPIBurst = flag.Int("kube-api-burst", 10, "Burst to use while communicating with the kubernetes apiserver. Defaults to 10.")
 
+	// TODO 这个FLAG有啥作用？
 	handleVolumeInUseError = flag.Bool("handle-volume-inuse-error", true, "Flag to turn on/off capability to handle volume in use error in resizer controller. Defaults to true if not set.")
 
 	featureGates map[string]bool
@@ -129,11 +131,13 @@ func main() {
 
 	metricsManager := metrics.NewCSIMetricsManager("" /* driverName */)
 
+	// 实例化CSI客户端
 	csiClient, err := csi.New(*csiAddress, *timeout, metricsManager)
 	if err != nil {
 		klog.Fatal(err.Error())
 	}
 
+	// 通过GRPC获取CSI插件驱动的名字
 	driverName, err := getDriverName(csiClient, *timeout)
 	if err != nil {
 		klog.Fatal(fmt.Errorf("get driver name failed: %v", err))
@@ -141,6 +145,7 @@ func main() {
 	klog.V(2).Infof("CSI driver name: %q", driverName)
 
 	translator := csitrans.New()
+	// 如果是InTree的CSI插件，需要重新实例化CSI客户端
 	if translator.IsMigratedCSIDriverByName(driverName) {
 		metricsManager = metrics.NewCSIMetricsManagerWithOptions(driverName, metrics.WithMigration())
 		migratedCsiClient, err := csi.New(*csiAddress, *timeout, metricsManager)
@@ -151,6 +156,8 @@ func main() {
 		csiClient = migratedCsiClient
 	}
 
+	// 根据CSI插件的Controller服务的ControllerGetCapabilities接口返回值以及Node服务的NodeGetCapabilities返回值判断当前CSI插件对于
+	// 持久卷的扩缩容情况的支持实例化不同的扩缩容器
 	csiResizer, err := resizer.NewResizerFromClient(
 		csiClient,
 		*timeout,
@@ -179,7 +186,9 @@ func main() {
 		workqueue.NewItemExponentialFailureRateLimiter(*retryIntervalStart, *retryIntervalMax),
 		*handleVolumeInUseError)
 	run := func(ctx context.Context) {
+		// 启动Informer，缓存K8S资源
 		informerFactory.Start(wait.NeverStop)
+		// 启动ResizeController
 		rc.Run(*workers, ctx)
 
 	}

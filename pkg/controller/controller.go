@@ -109,12 +109,15 @@ func NewResizeController(
 
 	// Add a resync period as the PVC's request size can be resized again when we handling
 	// a previous resizing request of the same PVC.
+	// 监听PVC
 	pvcInformer.Informer().AddEventHandlerWithResyncPeriod(cache.ResourceEventHandlerFuncs{
-		AddFunc:    ctrl.addPVC,
+		AddFunc: ctrl.addPVC,
+		// TODO 处理PVC的更新
 		UpdateFunc: ctrl.updatePVC,
 		DeleteFunc: ctrl.deletePVC,
 	}, resyncPeriod)
 
+	// 如果需要处理Volume使用异常，那么需要监听Pod的变化
 	if handleVolumeInUseError {
 		// list pods so as we can identify PVC that are in-use
 		klog.Infof("Register Pod informer for resizer %s", ctrl.name)
@@ -261,6 +264,7 @@ func (ctrl *resizeController) Run(
 		informersSyncd = append(informersSyncd, ctrl.podListerSynced)
 	}
 
+	// 等待PV以及PVC同步完成
 	if !cache.WaitForCacheSync(stopCh, informersSyncd...) {
 		klog.Errorf("Cannot sync pod, pv or pvc caches")
 		return
@@ -294,11 +298,13 @@ func (ctrl *resizeController) syncPVCs() {
 func (ctrl *resizeController) syncPVC(key string) error {
 	klog.V(4).Infof("Started PVC processing %q", key)
 
+	// 根据从WorkQueue中获取到的Key得到名称空间以及Name
 	namespace, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
 		return fmt.Errorf("getting namespace and name from key %s failed: %v", key, err)
 	}
 
+	// 从Informer中获取PVC资源对象
 	pvcObject, exists, err := ctrl.claims.GetByKey(key)
 	if err != nil {
 		return fmt.Errorf("getting PVC %s/%s failed: %v", namespace, name, err)
@@ -314,11 +320,13 @@ func (ctrl *resizeController) syncPVC(key string) error {
 		return fmt.Errorf("expected PVC got: %v", pvcObject)
 	}
 
+	// 当前PVC还没有绑定PV，直接退出
 	if pvc.Spec.VolumeName == "" {
 		klog.V(4).Infof("PV bound to PVC %q is not created yet", util.PVCKey(pvc))
 		return nil
 	}
 
+	// 获取PV资源对象
 	volumeObj, exists, err := ctrl.volumes.GetByKey(pvc.Spec.VolumeName)
 	if err != nil {
 		return fmt.Errorf("Get PV %q of pvc %q failed: %v", pvc.Spec.VolumeName, util.PVCKey(pvc), err)
@@ -333,18 +341,21 @@ func (ctrl *resizeController) syncPVC(key string) error {
 		return fmt.Errorf("expected volume but got %+v", volumeObj)
 	}
 
+	// TODO 这里实在判断什么？
 	if utilfeature.DefaultFeatureGate.Enabled(features.AnnotateFsResize) && ctrl.isNodeExpandComplete(pvc, pv) && metav1.HasAnnotation(pv.ObjectMeta, util.AnnPreResizeCapacity) {
 		if err := ctrl.deletePreResizeCapAnnotation(pv); err != nil {
 			return fmt.Errorf("failed removing annotation %s from pv %q: %v", util.AnnPreResizeCapacity, pv.Name, err)
 		}
 	}
 
+	// 如果PVC的申请容量大于PVC的实际容量，那么需要扩容；否则不需要扩容
 	if !ctrl.pvcNeedResize(pvc) {
 		klog.V(4).Infof("No need to resize PVC %q", util.PVCKey(pvc))
 		return nil
 	}
 
 	if utilfeature.DefaultFeatureGate.Enabled(features.RecoverVolumeExpansionFailure) {
+		// 扩容失败了就恢复
 		_, _, err, _ := ctrl.expandAndRecover(pvc, pv)
 		return err
 	} else {
@@ -360,6 +371,7 @@ func (ctrl *resizeController) syncPVC(key string) error {
 // pvcNeedResize returns true is a pvc requests a resize operation.
 func (ctrl *resizeController) pvcNeedResize(pvc *v1.PersistentVolumeClaim) bool {
 	// Only Bound pvc can be expanded.
+	// 只有已经绑定的PVC才可以扩容
 	if pvc.Status.Phase != v1.ClaimBound {
 		return false
 	}
@@ -368,6 +380,7 @@ func (ctrl *resizeController) pvcNeedResize(pvc *v1.PersistentVolumeClaim) bool 
 	}
 	actualSize := pvc.Status.Capacity[v1.ResourceStorage]
 	requestSize := pvc.Spec.Resources.Requests[v1.ResourceStorage]
+	// CSI存储只支持扩容，无法支持缩容
 	return requestSize.Cmp(actualSize) > 0
 }
 
